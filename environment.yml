@@ -1,0 +1,27 @@
+name: job
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - streamlit
+  - pandas
+  - numpy
+  - openai
+  - sqlalchemy
+  - requests
+  - pyyaml
+  - beautifulsoup4
+  - pip
+  - pip:
+      - crewai
+      - langchain
+      - langchain-community
+      - langchain-openai
+      - chromadb
+      - python-docx
+      - matplotlib
+      - tqdm
+      - jupyterlab
+      - scikit-learn
+      - sentence-transformers

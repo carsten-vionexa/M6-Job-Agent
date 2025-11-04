@@ -1,0 +1,26 @@
+# Python / Conda / Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+.ipynb_checkpoints
+.DS_Store
+*.sqlite3
+*.db
+chromadb/
+data/
+outputs/
+logs/
+
+# Conda / VS Code
+.env/
+.conda/
+.vscode/
+*.log
+
+# API Keys / Secrets
+config/*.yaml
+config/*.json
+secrets/
