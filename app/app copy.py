@@ -12,7 +12,7 @@ if ROOT_DIR not in sys.path:
 
 from src.ba_source import BAJobSource
 from src.ba_classification import BAClassification
-from src.db_manager import save_jobs_to_db, save_feedback, ensure_job_exists
+from src.db_manager import save_jobs_to_db, save_feedback
 
 
 # --------------------------------------------------
@@ -125,21 +125,16 @@ def search_jobs_for_profiles():
             with col1:
                 st.markdown(f"**{job['titel']}**  \n_{job['arbeitgeber']}_  \n📍 {job['ort']}")
 
-                # 🔎 Beschreibung + Link
+                # 🔎 Beschreibung ein-/ausklappbar
                 with st.expander("🔎 Jobbeschreibung anzeigen / ausblenden", expanded=False):
                     details = ba.get_details(refnr)
-                    beschreibung = details.get("beschreibung", "").strip()
+                    st.markdown(details.get("beschreibung", "Keine Details verfügbar."))
 
-                    if beschreibung and beschreibung.lower() != "keine details verfügbar.":
-                        st.markdown(beschreibung)
-                    else:
-                        st.caption("Keine Details verfügbar.")
-
-                    # 🌐 Immer den externen Link zeigen, falls refnr vorhanden
+                    # 🌐 Link zur Originalseite
                     job_url = (
                         details.get("url")
                         or job.get("url")
-                        or (f"https://www.arbeitsagentur.de/jobsuche/suche?id={refnr}" if refnr else None)
+                        or f"https://www.arbeitsagentur.de/jobsuche/suche?id={refnr}"
                     )
                     if job_url:
                         st.markdown(f"[🌐 Zur Jobseite auf der BA]({job_url})", unsafe_allow_html=True)
@@ -148,59 +143,23 @@ def search_jobs_for_profiles():
 
             with col2:
                 fb_col1, fb_col2 = st.columns(2)
-
                 with fb_col1:
                     if st.button("✅ Interessant", key=f"yes_{p['id']}_{refnr}"):
-                        details = ba.get_details(refnr) if refnr else {}
-                        job_for_db = {
-                            "titel": job.get("titel"),
-                            "arbeitgeber": job.get("arbeitgeber"),
-                            "ort": job.get("ort"),
-                            "beschreibung": details.get("beschreibung", ""),
-                            "source": job.get("source", "Bundesagentur für Arbeit"),
-                            "refnr": refnr,
-                            "url": details.get("url") or job.get("url")
-                        }
-                        job_id_db = ensure_job_exists(job_for_db)
-                        ok = save_feedback(job_id=job_id_db, profile_id=p["id"], feedback_value=1, comment=None)
-                        if ok:
+                        inserted = save_feedback(job_id=job_id, profile_id=p["id"], feedback_value=1)
+                        if inserted:
                             st.success("Feedback gespeichert: interessant 👍")
 
                 with fb_col2:
                     if st.button("❌ Nicht interessant", key=f"no_{p['id']}_{refnr}"):
-                        details = ba.get_details(refnr) if refnr else {}
-                        job_for_db = {
-                            "titel": job.get("titel"),
-                            "arbeitgeber": job.get("arbeitgeber"),
-                            "ort": job.get("ort"),
-                            "beschreibung": details.get("beschreibung", ""),
-                            "source": job.get("source", "Bundesagentur für Arbeit"),
-                            "refnr": refnr,
-                            "url": details.get("url") or job.get("url")
-                        }
-                        job_id_db = ensure_job_exists(job_for_db)
-                        ok = save_feedback(job_id=job_id_db, profile_id=p["id"], feedback_value=-1, comment=None)
-                        if ok:
+                        inserted = save_feedback(job_id=job_id, profile_id=p["id"], feedback_value=-1)
+                        if inserted:
                             st.warning("Feedback gespeichert: nicht passend 👎")
 
-            # 💬 Kommentar-Feld – auf gleicher Ebene wie col1/col2
-            comment = st.text_area("💬 Kommentar eingeben", key=f"comment_{p['id']}_{refnr}", height=80)
-            if st.button("💾 Kommentar speichern", key=f"save_comment_{p['id']}_{refnr}"):
+            comment = st.text_input("💬 Kommentar", key=f"comment_{p['id']}_{refnr}")
+            if st.button("💾 Speichern Kommentar", key=f"save_comment_{p['id']}_{refnr}"):
                 if comment.strip():
-                    details = ba.get_details(refnr) if refnr else {}
-                    job_for_db = {
-                        "titel": job.get("titel"),
-                        "arbeitgeber": job.get("arbeitgeber"),
-                        "ort": job.get("ort"),
-                        "beschreibung": details.get("beschreibung", ""),
-                        "source": job.get("source", "Bundesagentur für Arbeit"),
-                        "refnr": refnr,
-                        "url": details.get("url") or job.get("url")
-                    }
-                    job_id_db = ensure_job_exists(job_for_db)
-                    ok = save_feedback(job_id=job_id_db, profile_id=p["id"], feedback_value=None, comment=comment)
-                    if ok:
-                        st.info("💾 Kommentar gespeichert.")
+                    save_feedback(job_id=job_id, profile_id=p["id"], feedback_value=None, comment=comment)
+                    st.info("Kommentar gespeichert.")
                 else:
                     st.caption("Bitte Text eingeben, bevor du speicherst.")
 
@@ -216,7 +175,7 @@ def search_jobs_for_profiles():
 # --------------------------------------------------
 st.set_page_config(page_title="Job-Recherche", layout="wide")
 st.title("🧭 Multi-Profil-Jobrecherche (Bundesagentur für Arbeit)")
-st.caption("Sucht zuerst lokal (Görlitz), dann bundesweit. Ermöglicht Sofort-Feedback, Kommentare und Speichern.")
+st.caption("Sucht zuerst lokal (Görlitz), dann bundesweit. Ermöglicht Sofort-Feedback und Speichern.")
 
 results = search_jobs_for_profiles()
 st.success("✅ Suche abgeschlossen.")
