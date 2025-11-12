@@ -6,6 +6,7 @@ import sys
 # Pfadkorrektur (damit src & pages importierbar sind)
 # --------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = ROOT_DIR.parents[0]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -35,6 +36,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+if "initialized" not in st.session_state:
+    st.session_state.initialized = True
+    print("🔄 App neu geladen")
 
 # --------------------------------------------------
 # Sidebar Navigation

@@ -2,16 +2,17 @@ import streamlit as st
 import sqlite3, json, os, sys
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 
 # --------------------------------------------------
-# Pfadkorrektur, damit src importiert werden kann
+# Pfadkorrektur, damit src & models importiert werden können
 # --------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # --------------------------------------------------
-# Imports aus src
+# Module & Funktionen importieren
 # --------------------------------------------------
 from src.ba_source import BAJobSource
 from src.ba_classification import BAClassification
@@ -22,13 +23,25 @@ from src.db_manager import (
     load_feedback_for_profile,
 )
 from src.research_agent import compute_basescore
-from src.learning_engine import store_feedback, predict_fit_score
+from models.compute_fit_score import cosine_similarity, load_embedding
+from models.learning_engine import update_profile_embedding
 from app.ui_components.job_cards import render_job_card
 
 
 # --------------------------------------------------
 # Hilfsfunktionen
 # --------------------------------------------------
+def predict_fit_score(job, base_score=0):
+    """Berechnet den semantischen Fit-Score zwischen aktuellem Profil und einem Job."""
+    try:
+        profile_vec = load_embedding(job["profile_embedding"])
+        job_vec = load_embedding(job["embedding"])
+        fit = cosine_similarity(profile_vec, job_vec)
+        return float(fit * 0.8 + base_score * 0.2)
+    except Exception:
+        return base_score
+
+
 def load_active_user_profile(db_path=None):
     """Lädt aktives Benutzerprofil aus SQLite."""
     if db_path is None:
@@ -72,7 +85,7 @@ def _build_profile_for_scoring(selected_profile: dict, all_terms: list, region_f
 
 
 def _persist_feedback_and_job(ba, job, profile, refnr, fit_score, feedback_value, comment=None):
-    """Speichert Job- und Feedbackdaten in SQLite + Chroma."""
+    """Speichert Job- und Feedbackdaten in SQLite und startet direkt den Lernprozess."""
     details = ba.get_details(refnr) if refnr else {}
     job_for_db = {
         "titel": job.get("titel"),
@@ -103,11 +116,11 @@ def _persist_feedback_and_job(ba, job, profile, refnr, fit_score, feedback_value
         feedback_score=fit_score
     )
 
-    # 💾 In Chroma speichern (Lernbasis)
-    try:
-        store_feedback(job_for_db, profile["id"], feedback_value, fit_score, comment)
-    except Exception as e:
-        print(f"⚠️ Chroma-Speicherfehler: {e}")
+    # 🤖 Learning Engine direkt starten (synchron)
+    if ok:
+        print(f"🤖 Starte Learning Engine für Profil {profile['id']} ...")
+        update_profile_embedding(profile_id=profile["id"])
+        print("🎯 Lernvorgang abgeschlossen.")
 
     return ok
 
@@ -120,7 +133,6 @@ def render():
     st.title("🔍 Job- & Karriere-Suche")
     st.caption("Suche passende Stellen über die Bundesagentur für Arbeit und gib direkt Feedback.")
 
-    # DB-Schema prüfen
     migrate_schema()
 
     profiles = load_profiles_for_user()
@@ -136,7 +148,6 @@ def render():
         st.warning("Kein gültiges Profil ausgewählt.")
         st.stop()
 
-    # Benutzerprofil laden (Region etc.)
     user_profile = load_active_user_profile()
     region = (user_profile.get("region") or "").strip()
     radius = 30
@@ -154,14 +165,12 @@ def render():
     # Suche starten
     # --------------------------------------------------
     if st.session_state.get("search_started"):
-
         profile_title = selected_profile["name"].split("–")[-1].strip()
         desc = (selected_profile.get("description_text") or "")[:150]
 
         st.markdown(f"## 👤 {profile_title}")
         st.caption(desc)
 
-        # Query-Erweiterung
         title_map = {
             "KI-Enablement Manager": ["Datenanalyst", "Projektleiter KI", "Data Scientist"],
             "Office & CRM Coordinator": ["Bürokaufmann", "Verwaltung", "Sachbearbeiter"],
@@ -179,7 +188,6 @@ def render():
         st.write(f"🔎 Suchbegriffe: {', '.join(all_terms)}")
         st.write(f"📍 Region: {region or '–'} | 🔁 Radius: {radius} km")
 
-        # Jobs abrufen
         ba = BAJobSource()
         profile_for_scoring = _build_profile_for_scoring(selected_profile, all_terms, region)
         jobs_collected = []
@@ -202,20 +210,14 @@ def render():
             st.info("Keine Treffer gefunden.")
             return
 
-        # --------------------------------------------------
-        # Ergebnisanzeige
-        # --------------------------------------------------
         st.subheader("📋 Gefundene Stellen")
 
-        # Lade vorhandenes Feedback
         feedback_entries = load_feedback_for_profile(selected_profile["id"])
         feedback_by_job = {f["job_id"]: f for f in feedback_entries}
 
-        # Anzeige pro Job
         for idx, job in enumerate(unique_jobs):
             refnr = job.get("refnr")
 
-            # Callback für Speichern
             def on_save(job_obj, feedback_value, comment):
                 ok = _persist_feedback_and_job(
                     ba,
@@ -227,9 +229,9 @@ def render():
                     comment
                 )
                 if ok:
-                    st.success(f"✅ Feedback gespeichert für {job_obj.get('titel','(ohne Titel)')}")
+                        st.success(f"✅ Feedback gespeichert für {job_obj.get('titel','(ohne Titel)')}")
+                        st.rerun()
 
-            # Bestehendes Feedback prüfen
             existing = None
             for f in feedback_by_job.values():
                 if f["job_id"] == job.get("id"):
@@ -239,7 +241,6 @@ def render():
                         "timestamp": f.get("timestamp")
                     }
 
-            # Jobkarte rendern
             render_job_card(
                 job=job,
                 profile=selected_profile,

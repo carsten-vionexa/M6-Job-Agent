@@ -36,7 +36,7 @@ def load_learning_data(db_path="data/career_agent.db"):
 
     # Delta berechnen
     df["delta_score"] = df["feedback_score"] - df["base_score"]
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df[df["timestamp"].notna()]
     return df
 
 

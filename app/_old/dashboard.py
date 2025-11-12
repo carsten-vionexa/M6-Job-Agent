@@ -23,24 +23,10 @@ def load_feedback_data(db_path="data/career_agent.db"):
         FROM feedback f
         LEFT JOIN jobs j ON f.job_id = j.id
         LEFT JOIN profiles p ON f.profile_id = p.id
-        WHERE 1=1
+        WHERE f.timestamp IS NOT NULL
         ORDER BY f.timestamp DESC
     """, conn)
     conn.close()
-
-    # Nachladen: alte Datensätze sichtbar machen
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    df["timestamp"] = df["timestamp"].fillna(pd.Timestamp("1970-01-01", tz="UTC"))
-
-    # leere Score-Felder zu 0 setzen
-    for col in ["base_score", "feedback_score"]:
-        if col not in df.columns:
-            df[col] = 0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    # Delta berechnen
-    df["delta_score"] = df["feedback_score"] - df["base_score"]
-
 
     # Zeit und Deltas bereinigen
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
@@ -104,50 +90,32 @@ def render():
     st.plotly_chart(fig_scatter, use_container_width=True)
 
     # --------------------------------------------------
-    # Entwicklung über Zeit (robust gegen NaT)
+    # Entwicklung über Zeit
     # --------------------------------------------------
     st.subheader("⏱️ Lernentwicklung über Zeit")
 
-    # sicherstellen: Zeit & Zahlen korrekt
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    df = df.dropna(subset=["timestamp"])
-    df["delta_score"] = pd.to_numeric(df["delta_score"], errors="coerce").fillna(0)
+    df_time = (
+        df.groupby(["profile_name"])
+        .resample("1D", on="timestamp")["delta_score"]
+        .mean()
+        .reset_index()
+    )
 
-    # nach Zeit sortieren + als Index setzen
-    df = df.sort_values("timestamp").set_index("timestamp")
-
-    # resample pro Profil auf Tagesmittel
-    if not df.empty:
-        df_time = (
-            df.groupby("profile_name")["delta_score"]
-            .resample("1D")
-            .mean()
-            .reset_index()
-        )
-
-        if not df_time.empty:
-            fig_time = px.line(
-                df_time,
-                x="timestamp",
-                y="delta_score",
-                color="profile_name",
-                title="Ø Delta Score pro Tag",
-                labels={"delta_score": "Ø Δ (Veränderung)", "timestamp": "Datum"},
-                markers=True
-            )
-            st.plotly_chart(fig_time, use_container_width=True)
-        else:
-            st.caption("Noch keine zeitlichen Veränderungen (Δ) vorhanden.")
-    else:
-        st.caption("Keine gültigen Zeitstempel vorhanden.")
+    fig_time = px.line(
+        df_time,
+        x="timestamp",
+        y="delta_score",
+        color="profile_name",
+        title="Ø Delta Score pro Tag (gleitend)",
+        labels={"delta_score": "Ø Delta (Veränderung)", "timestamp": "Datum"},
+        markers=True
+    )
+    st.plotly_chart(fig_time, use_container_width=True)
 
     # --------------------------------------------------
     # Detailtabelle
     # --------------------------------------------------
-    
-    # vor der Detailtabelle
-    df = df.reset_index()
-
+  
     st.subheader("📋 Detaillierte Feedbacks (letzte Bewertungen)")
 
     # Null-Werte aufbereiten

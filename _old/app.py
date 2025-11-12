@@ -15,7 +15,7 @@ from src.ba_source import BAJobSource
 from src.ba_classification import BAClassification
 from src.db_manager import save_feedback, ensure_job_exists, migrate_schema
 from src.research_agent import compute_basescore
-from src.learning_engine import store_feedback, predict_fit_score
+from _old.learning_engine import store_feedback, predict_fit_score
 
 
 # --------------------------------------------------
