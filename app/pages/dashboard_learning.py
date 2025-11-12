@@ -1,126 +1,133 @@
 import streamlit as st
-import pandas as pd
 import sqlite3
+import pandas as pd
 import plotly.express as px
-from pathlib import Path
-
-DB_PATH = Path(__file__).resolve().parents[2] / "data" / "career_agent.db"
+from datetime import datetime
 
 # --------------------------------------------------
-# Hilfsfunktionen
+# Daten laden
 # --------------------------------------------------
-def load_joined_data():
-    """Lädt Jobs + Feedback mit Scores aus SQLite."""
-    conn = sqlite3.connect(DB_PATH)
-    query = """
-        SELECT f.id, f.job_id, f.profile_id, f.feedback_value, f.comment, f.match_score AS feedback_score, f.timestamp,
-               j.title, j.company, j.location, j.match_score AS job_score
+def load_learning_data(db_path="data/career_agent.db"):
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query("""
+        SELECT 
+            f.id AS feedback_id,
+            f.profile_id,
+            f.feedback_value,
+            f.match_score,
+            f.base_score,
+            f.feedback_score,
+            f.comment,
+            f.timestamp,
+            p.name AS profile_name,
+            j.title AS job_title,
+            j.company AS company
         FROM feedback f
+        LEFT JOIN profiles p ON f.profile_id = p.id
         LEFT JOIN jobs j ON f.job_id = j.id
         ORDER BY f.timestamp DESC
-    """
-    df = pd.read_sql_query(query, conn)
+    """, conn)
     conn.close()
 
-    if not df.empty:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["delta_score"] = df["feedback_score"] - df["job_score"]
+    # NaN-Werte ersetzen
+    for col in ["base_score", "feedback_score", "match_score"]:
+        if col in df.columns:
+            df[col] = df[col].fillna(0.0)
+
+    # Delta berechnen
+    df["delta_score"] = df["feedback_score"] - df["base_score"]
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df
 
 
 # --------------------------------------------------
-# Hauptanzeige
+# Render
 # --------------------------------------------------
 def render():
-    """Zeigt den Lernfortschritt und Score-Entwicklung."""
-    st.title("🧠 Lernfortschritt & Score-Anpassung")
-    st.caption("Analysiert, wie gut das System deine Präferenzen lernt – Vergleich von BaseScore, Feedback und Anpassung.")
+    st.title("🧠 Lernanalyse & Score-Anpassung")
+    st.caption("Hier siehst du, wie dein Feedback das System verändert hat – "
+               "je größer die Differenz, desto stärker der Lerneffekt.")
 
-    df = load_joined_data()
+    df = load_learning_data()
+
     if df.empty:
-        st.info("Noch keine Daten für Lernanalyse vorhanden.")
+        st.info("Noch keine Feedbackdaten vorhanden.")
         return
 
     # --------------------------------------------------
-    # 1️⃣ Übersicht
+    # Kennzahlen
     # --------------------------------------------------
-    avg_delta = df["delta_score"].mean().round(3)
-    pos_learning = (df["delta_score"] > 0).sum()
-    neg_learning = (df["delta_score"] < 0).sum()
+    st.subheader("📊 Überblick")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Ø Lernverschiebung (FitScore - BaseScore)", f"{avg_delta:+.3f}")
-    c2.metric("Verbesserte Scores", pos_learning)
-    c3.metric("Verschlechterte Scores", neg_learning)
+    total = len(df)
+    improved = len(df[df["delta_score"] > 0.05])
+    worsened = len(df[df["delta_score"] < -0.05])
+    neutral = total - improved - worsened
+    avg_delta = df["delta_score"].mean()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Gesamtbewertungen", total)
+    col2.metric("📈 Verbesserte Scores", improved)
+    col3.metric("📉 Verschlechterte Scores", worsened)
+    col4.metric("Ø Delta", f"{avg_delta:.3f}")
 
     st.markdown("---")
 
     # --------------------------------------------------
-    # 2️⃣ Verteilung BaseScore vs FeedbackScore
+    # Scatterplot: BaseScore vs FeedbackScore
     # --------------------------------------------------
-    st.subheader("📊 Vergleich: BaseScore vs FeedbackScore")
+    st.subheader("🎯 Vergleich: BaseScore vs. FeedbackScore")
+
     fig_scatter = px.scatter(
         df,
-        x="job_score",
+        x="base_score",
         y="feedback_score",
-        color=df["feedback_value"].map({1: "Interessant", -1: "Nicht passend"}),
-        hover_data=["title", "company"],
-        labels={"job_score": "BaseScore (System)", "feedback_score": "Dein Feedback"},
-        title="Wie unterscheiden sich Systembewertung und dein Feedback?",
-        trendline="ols"
+        color="delta_score",
+        hover_data=["job_title", "company", "profile_name", "comment"],
+        color_continuous_scale=["red", "grey", "green"],
+        title="BaseScore (System) vs. FeedbackScore (dein Urteil)",
+        labels={
+            "base_score": "Systembewertung",
+            "feedback_score": "Deine Bewertung",
+            "delta_score": "Abweichung"
+        }
+    )
+    fig_scatter.add_shape(
+        type="line",
+        x0=0, y0=0, x1=1, y1=1,
+        line=dict(color="black", dash="dot")
     )
     st.plotly_chart(fig_scatter, use_container_width=True)
 
     # --------------------------------------------------
-    # 3️⃣ Lernverlauf über Zeit
+    # Lernentwicklung über Zeit
     # --------------------------------------------------
-    st.subheader("📈 Lernverlauf (Score-Differenz über Zeit)")
-    fig_line = px.line(
-        df.sort_values("timestamp"),
-        x="timestamp",
-        y="delta_score",
-        color=df["feedback_value"].map({1: "Interessant", -1: "Nicht passend"}),
-        markers=True,
-        labels={"timestamp": "Datum", "delta_score": "Δ Score (Feedback - System)"},
-        title="Entwicklung der Score-Abweichung über Zeit"
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
+    st.subheader("⏱️ Lernentwicklung über Zeit")
 
-    # --------------------------------------------------
-    # 4️⃣ Profil-Lerneffekt (pro Berufsprofil)
-    # --------------------------------------------------
-    st.subheader("🎯 Lernentwicklung pro Profil")
-    prof_df = (
-        df.groupby("profile_id")
-        .agg(
-            feedbacks=("feedback_value", "count"),
-            avg_feedback=("feedback_score", "mean"),
-            avg_jobscore=("job_score", "mean"),
-            delta=("delta_score", "mean"),
+    df_sorted = df.sort_values("timestamp")
+    if not df_sorted.empty:
+        df_sorted["rolling_delta"] = df_sorted["delta_score"].rolling(window=5, min_periods=1).mean()
+
+        fig_trend = px.line(
+            df_sorted,
+            x="timestamp",
+            y="rolling_delta",
+            color="profile_name",
+            markers=True,
+            title="Verlauf der durchschnittlichen Score-Abweichung (gleitend)",
+            labels={"rolling_delta": "Ø Delta (5 Werte)"}
         )
-        .reset_index()
-    )
-
-    fig_prof = px.bar(
-        prof_df,
-        x="profile_id",
-        y="delta",
-        color="delta",
-        color_continuous_scale=["red", "yellow", "green"],
-        title="Durchschnittliche Lernverschiebung pro Profil",
-        labels={"profile_id": "Profil-ID", "delta": "Ø Δ Score"}
-    )
-    st.plotly_chart(fig_prof, use_container_width=True)
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.caption("Noch keine Zeitreihe verfügbar.")
 
     # --------------------------------------------------
-    # 5️⃣ Tabelle mit Details
+    # Tabelle
     # --------------------------------------------------
-    st.subheader("📋 Details zu einzelnen Feedbacks")
-    st.dataframe(
-        df[["timestamp", "title", "company", "job_score", "feedback_score", "delta_score", "feedback_value", "comment"]],
-        hide_index=True,
-        use_container_width=True,
-    )
+    st.subheader("📋 Detailtabelle (letzte Bewertungen)")
+    show_cols = ["timestamp", "profile_name", "job_title", "base_score", "feedback_score", "delta_score", "feedback_value", "comment"]
+    st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.caption("💡 Positiver Δ-Score bedeutet: Das System hat durch dein Feedback gelernt, den Job stärker zu gewichten.")
+    st.caption("Grün = du hast höher bewertet als das System. Rot = du hast niedriger bewertet. "
+               "Grau = kaum Unterschied → System schätzt dich bereits gut ein.")

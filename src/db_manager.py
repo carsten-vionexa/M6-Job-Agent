@@ -41,8 +41,7 @@ def migrate_schema(db_path="data/career_agent.db"):
 def ensure_job_exists(job, matched_profile_id=None, match_score=None, db_path="data/career_agent.db"):
     """
     Legt einen Job an oder aktualisiert ihn.
-    Schreibt refnr und date_posted mit.
-    Gibt job_id zurück.
+    Gibt job_id zurück (legt Datensatz notfalls neu an).
     """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -53,113 +52,118 @@ def ensure_job_exists(job, matched_profile_id=None, match_score=None, db_path="d
     description = job.get("beschreibung") or ""
     source = job.get("source") or ""
     url = job.get("url") or ""
-    refnr = (job.get("refnr") or None)
-    # Falls BA kein Datum liefert, auf „heute“ fallen
+    refnr = job.get("refnr") or None
     date_posted = job.get("date_posted") or datetime.now().strftime("%Y-%m-%d")
 
-    # 1) Existenzprüfung – bevorzugt über refnr, sonst über (title, company, location)
+    print("\n=== ENSURE_JOB_EXISTS DEBUG ===")
+    print(f"title={title}, company={company}, location={location}, refnr={refnr}")
+
+    # Prüfen, ob Job existiert
     row = None
     if refnr:
         cur.execute("SELECT id FROM jobs WHERE refnr = ?", (refnr,))
         row = cur.fetchone()
     if not row:
         cur.execute(
-            "SELECT id FROM jobs WHERE title = ? AND company = ? AND location = ?",
+            "SELECT id FROM jobs WHERE title=? AND company=? AND location=?",
             (title, company, location),
         )
         row = cur.fetchone()
 
-    # 2) Update / Insert
+    print(f"Bestehender Job: {row}")
+
     if row:
         job_id = row[0]
         cur.execute(
             """
-            UPDATE jobs SET
-                title = COALESCE(?, title),
-                company = COALESCE(?, company),
-                location = COALESCE(?, location),
-                description = COALESCE(?, description),
-                source = COALESCE(?, source),
-                url = COALESCE(?, url),
-                refnr = COALESCE(?, refnr),
-                date_posted = COALESCE(?, date_posted),
-                matched_profile_id = COALESCE(?, matched_profile_id),
-                match_score = CASE WHEN ? IS NOT NULL THEN ? ELSE match_score END
-            WHERE id = ?
+            UPDATE jobs
+            SET title=?, company=?, location=?, description=?, source=?, url=?,
+                refnr=?, date_posted=?, matched_profile_id=?, match_score=?
+            WHERE id=?
             """,
             (
                 title, company, location, description, source, url,
-                refnr, date_posted, matched_profile_id,
-                match_score, match_score,
-                job_id,
+                refnr, date_posted, matched_profile_id, match_score, job_id
             ),
         )
+        print(f"→ UPDATE Job-ID {job_id}")
     else:
         cur.execute(
             """
             INSERT INTO jobs
-                (title, company, location, description, source, url, refnr, date_posted, matched_profile_id, match_score)
+            (title, company, location, description, source, url, refnr, date_posted, matched_profile_id, match_score)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title, company, location, description, source, url,
-                refnr, date_posted, matched_profile_id, match_score,
+                refnr, date_posted, matched_profile_id, match_score
             ),
         )
         job_id = cur.lastrowid
+        print(f"→ INSERT Job-ID {job_id}")
 
     conn.commit()
     conn.close()
+    print("✅ Job gespeichert\n")
     return job_id
-
 
 # --------------------------------------------------
 # Feedbackverwaltung
 # --------------------------------------------------
-def save_feedback(job_id, profile_id, feedback_value=None, comment=None, match_score=None, db_path="data/career_agent.db"):
+def save_feedback(
+    job_id,
+    profile_id,
+    feedback_value=None,
+    comment=None,
+    match_score=None,
+    base_score=None,
+    feedback_score=None,
+    db_path="data/career_agent.db"
+):
     """
     Speichert Feedback mit optionalem Kommentar und Score.
     Falls für (job_id, profile_id) bereits Feedback existiert, wird es aktualisiert.
     - feedback_value: 1 (Like), -1 (Dislike), None (Kommentar)
-    - match_score: aktueller Score des Jobs beim Speichern
+    - match_score: aktueller Fit-Score
+    - base_score: ursprünglicher Basisscore
+    - feedback_score: tatsächliche Bewertung nach Feedback
     """
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Prüfen, ob schon Feedback existiert (gleicher Job + Profil)
         cur.execute(
-            "SELECT id, feedback_value, comment FROM feedback WHERE job_id=? AND profile_id=? ORDER BY timestamp DESC LIMIT 1",
+            "SELECT id FROM feedback WHERE job_id=? AND profile_id=? ORDER BY timestamp DESC LIMIT 1",
             (job_id, profile_id),
         )
         row = cur.fetchone()
 
         if row:
             feedback_id = row[0]
-            existing_value, existing_comment = row[1], row[2]
-
-            # Falls noch kein Like/Dislike gesetzt wurde, aber jetzt eins kommt → übernehmen
-            new_value = feedback_value if feedback_value is not None else existing_value
-            # Falls bereits Kommentar vorhanden → erweitern oder ersetzen
-            new_comment = comment if comment else existing_comment
-
             cur.execute(
                 """
                 UPDATE feedback
-                SET feedback_value = ?, comment = ?, match_score = ?, timestamp = ?
+                SET feedback_value = ?,
+                    comment = ?,
+                    match_score = ?,
+                    base_score = ?,
+                    feedback_score = ?,
+                    timestamp = ?
                 WHERE id = ?
                 """,
-                (new_value, new_comment, match_score, ts, feedback_id),
+                (feedback_value, comment, match_score, base_score, feedback_score, ts, feedback_id),
             )
         else:
-            # Kein bestehendes Feedback → neuer Eintrag
             cur.execute(
                 """
-                INSERT INTO feedback (job_id, profile_id, feedback_value, comment, match_score, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO feedback
+                    (job_id, profile_id, feedback_value, comment,
+                     match_score, base_score, feedback_score, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, profile_id, feedback_value, comment, match_score, ts),
+                (job_id, profile_id, feedback_value, comment,
+                 match_score, base_score, feedback_score, ts),
             )
 
         conn.commit()

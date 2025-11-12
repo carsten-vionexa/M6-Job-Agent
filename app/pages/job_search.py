@@ -3,7 +3,9 @@ import sqlite3, json, os, sys
 from datetime import datetime
 from pathlib import Path
 
+# --------------------------------------------------
 # Pfadkorrektur, damit src importiert werden kann
+# --------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -13,11 +15,15 @@ if str(ROOT_DIR) not in sys.path:
 # --------------------------------------------------
 from src.ba_source import BAJobSource
 from src.ba_classification import BAClassification
-from src.db_manager import save_feedback, ensure_job_exists, migrate_schema
+from src.db_manager import (
+    save_feedback,
+    ensure_job_exists,
+    migrate_schema,
+    load_feedback_for_profile,
+)
 from src.research_agent import compute_basescore
 from src.learning_engine import store_feedback, predict_fit_score
 from app.ui_components.job_cards import render_job_card
-from src.db_manager import load_feedback_for_profile
 
 
 # --------------------------------------------------
@@ -66,7 +72,7 @@ def _build_profile_for_scoring(selected_profile: dict, all_terms: list, region_f
 
 
 def _persist_feedback_and_job(ba, job, profile, refnr, fit_score, feedback_value, comment=None):
-    """Speichert Job + Feedback + Chroma."""
+    """Speichert Job- und Feedbackdaten in SQLite + Chroma."""
     details = ba.get_details(refnr) if refnr else {}
     job_for_db = {
         "titel": job.get("titel"),
@@ -75,13 +81,35 @@ def _persist_feedback_and_job(ba, job, profile, refnr, fit_score, feedback_value
         "beschreibung": details.get("beschreibung", ""),
         "source": job.get("source", "Bundesagentur für Arbeit"),
         "refnr": refnr,
-        "url": details.get("url") or job.get("url")
+        "url": details.get("url") or job.get("url"),
     }
 
-    job_id_db = ensure_job_exists(job_for_db, matched_profile_id=profile["id"], match_score=fit_score)
-    save_feedback(job_id_db, profile["id"], feedback_value, comment, fit_score)
-    store_feedback(job_for_db, profile["id"], feedback_value, fit_score, comment)
-    return True
+    # 🧱 Job in DB sicherstellen oder aktualisieren
+    job_id_db = ensure_job_exists(
+        job_for_db,
+        matched_profile_id=profile["id"],
+        match_score=fit_score
+    )
+
+    # 🧠 Feedback speichern (inkl. BaseScore + FeedbackScore)
+    base_score = job.get("base_score", 0)
+    ok = save_feedback(
+        job_id=job_id_db,
+        profile_id=profile["id"],
+        feedback_value=feedback_value,
+        comment=comment,
+        match_score=fit_score,
+        base_score=base_score,
+        feedback_score=fit_score
+    )
+
+    # 💾 In Chroma speichern (Lernbasis)
+    try:
+        store_feedback(job_for_db, profile["id"], feedback_value, fit_score, comment)
+    except Exception as e:
+        print(f"⚠️ Chroma-Speicherfehler: {e}")
+
+    return ok
 
 
 # --------------------------------------------------
@@ -183,31 +211,42 @@ def render():
         feedback_entries = load_feedback_for_profile(selected_profile["id"])
         feedback_by_job = {f["job_id"]: f for f in feedback_entries}
 
+        # Anzeige pro Job
         for idx, job in enumerate(unique_jobs):
             refnr = job.get("refnr")
-            job_key = f"{selected_profile['id']}_{refnr}_{idx}"
 
-            with st.container():
-                st.markdown(f"**{job.get('titel','')}**  \n_{job.get('arbeitgeber','')}_  \n📍 {job.get('ort','')}")
-                color = "🟢" if job.get("fit_score", 0) >= 0.7 else ("🟡" if job.get("fit_score", 0) >= 0.5 else "⚪️")
-                st.caption(f"{color} Fit-Score: {job.get('fit_score',0):.2f} – {job.get('why_base','')}")
+            # Callback für Speichern
+            def on_save(job_obj, feedback_value, comment):
+                ok = _persist_feedback_and_job(
+                    ba,
+                    job_obj,
+                    selected_profile,
+                    job_obj.get("refnr"),
+                    job_obj.get("fit_score", 0),
+                    feedback_value,
+                    comment
+                )
+                if ok:
+                    st.success(f"✅ Feedback gespeichert für {job_obj.get('titel','(ohne Titel)')}")
 
-                with st.expander("🔎 Jobbeschreibung anzeigen / ausblenden"):
-                    details = ba.get_details(refnr) if refnr else {}
-                    beschreibung = (details.get("beschreibung") or "").strip()
-                    if beschreibung and beschreibung.lower() != "keine details verfügbar.":
-                        st.markdown(beschreibung)
-                    else:
-                        st.caption("Keine Details verfügbar.")
-                    job_url = details.get("url") or job.get("url") or (
-                        f"https://www.arbeitsagentur.de/jobsuche/suche?id={refnr}" if refnr else None
-                    )
-                    if job_url:
-                        st.markdown(f"[🌐 Zur Jobseite auf der BA]({job_url})")
+            # Bestehendes Feedback prüfen
+            existing = None
+            for f in feedback_by_job.values():
+                if f["job_id"] == job.get("id"):
+                    existing = {
+                        "value": f.get("feedback_value"),
+                        "comment": f.get("comment"),
+                        "timestamp": f.get("timestamp")
+                    }
 
-                # Kommentar + Feedback
-                from app.ui_components.job_cards import render_job_card
-                from src.db_manager import load_feedback_for_profile
+            # Jobkarte rendern
+            render_job_card(
+                job=job,
+                profile=selected_profile,
+                ba=ba,
+                existing_feedback=existing,
+                on_save=on_save
+            )
 
         if st.button("🔄 Neue Suche starten"):
             st.session_state["search_started"] = False
