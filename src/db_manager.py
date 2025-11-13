@@ -1,5 +1,8 @@
 import sqlite3
+import json
 from datetime import datetime
+from models.embeddings import get_embedding
+
 
 # --------------------------------------------------
 # Schema-Migration (führt sich beim App-Start einmal aus)
@@ -22,6 +25,8 @@ def migrate_schema(db_path="data/career_agent.db"):
         cur.execute("ALTER TABLE jobs ADD COLUMN obsolete_user_profile_id INTEGER;")
     if not col_exists("jobs", "refnr"):
         cur.execute("ALTER TABLE jobs ADD COLUMN refnr TEXT;")
+    if not col_exists("jobs", "external_id"):
+        cur.execute("ALTER TABLE jobs ADD COLUMN external_id TEXT;")
     if not col_exists("jobs", "date_posted"):
         cur.execute("ALTER TABLE jobs ADD COLUMN date_posted TEXT;")
 
@@ -46,21 +51,26 @@ def ensure_job_exists(job, matched_profile_id=None, match_score=None, db_path="d
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    title = (job.get("titel") or "").strip()
-    company = (job.get("arbeitgeber") or "").strip()
-    location = (job.get("ort") or "").strip()
-    description = job.get("beschreibung") or ""
+    # Felder tolerant zuordnen
+    title = (job.get("title") or job.get("titel") or "").strip()
+    company = (job.get("company") or job.get("arbeitgeber") or "").strip()
+    location = (job.get("location") or job.get("ort") or "").strip()
+    description = (job.get("description") or job.get("beschreibung") or "").strip()
     source = job.get("source") or ""
     url = job.get("url") or ""
-    refnr = job.get("refnr") or None
+    refnr = job.get("refnr") or job.get("external_id") or None
+    external_id = job.get("external_id") or job.get("refnr") or None
     date_posted = job.get("date_posted") or datetime.now().strftime("%Y-%m-%d")
 
     print("\n=== ENSURE_JOB_EXISTS DEBUG ===")
-    print(f"title={title}, company={company}, location={location}, refnr={refnr}")
+    print(f"title={title}, company={company}, location={location}, refnr={refnr}, external_id={external_id}")
 
-    # Prüfen, ob Job existiert
+    # Prüfen, ob Job existiert (nach external_id oder refnr)
     row = None
-    if refnr:
+    if external_id:
+        cur.execute("SELECT id FROM jobs WHERE external_id = ?", (external_id,))
+        row = cur.fetchone()
+    if not row and refnr:
         cur.execute("SELECT id FROM jobs WHERE refnr = ?", (refnr,))
         row = cur.fetchone()
     if not row:
@@ -70,20 +80,18 @@ def ensure_job_exists(job, matched_profile_id=None, match_score=None, db_path="d
         )
         row = cur.fetchone()
 
-    print(f"Bestehender Job: {row}")
-
     if row:
         job_id = row[0]
         cur.execute(
             """
             UPDATE jobs
             SET title=?, company=?, location=?, description=?, source=?, url=?,
-                refnr=?, date_posted=?, matched_profile_id=?, match_score=?
+                refnr=?, external_id=?, date_posted=?, matched_profile_id=?, match_score=?
             WHERE id=?
             """,
             (
                 title, company, location, description, source, url,
-                refnr, date_posted, matched_profile_id, match_score, job_id
+                refnr, external_id, date_posted, matched_profile_id, match_score, job_id
             ),
         )
         print(f"→ UPDATE Job-ID {job_id}")
@@ -91,21 +99,42 @@ def ensure_job_exists(job, matched_profile_id=None, match_score=None, db_path="d
         cur.execute(
             """
             INSERT INTO jobs
-            (title, company, location, description, source, url, refnr, date_posted, matched_profile_id, match_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (title, company, location, description, source, url, refnr, external_id,
+               date_posted, matched_profile_id, match_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title, company, location, description, source, url,
-                refnr, date_posted, matched_profile_id, match_score
+                refnr, external_id, date_posted, matched_profile_id, match_score
             ),
         )
         job_id = cur.lastrowid
         print(f"→ INSERT Job-ID {job_id}")
 
     conn.commit()
+
+    # --------------------------------------------------
+    # Embedding automatisch erzeugen, falls leer
+    # --------------------------------------------------
+    if description:
+        cur.execute("SELECT embedding FROM jobs WHERE id = ?", (job_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            try:
+                emb = get_embedding(description)
+                emb_json = json.dumps(emb.tolist())
+                cur.execute("UPDATE jobs SET embedding=? WHERE id=?", (emb_json, job_id))
+                conn.commit()
+                print(f"🧠 Embedding erzeugt für Job-ID {job_id}")
+            except Exception as e:
+                print(f"⚠️ Embedding-Fehler bei Job {job_id}: {e}")
+    else:
+        print("⚠️ Kein Beschreibungstext – kein Embedding erzeugt.")
+
     conn.close()
     print("✅ Job gespeichert\n")
     return job_id
+
 
 # --------------------------------------------------
 # Feedbackverwaltung

@@ -31,16 +31,48 @@ from app.ui_components.job_cards import render_job_card
 # --------------------------------------------------
 # Hilfsfunktionen
 # --------------------------------------------------
-def predict_fit_score(job, base_score=0):
-    """Berechnet den semantischen Fit-Score zwischen aktuellem Profil und einem Job."""
-    try:
-        profile_vec = load_embedding(job["profile_embedding"])
-        job_vec = load_embedding(job["embedding"])
-        fit = cosine_similarity(profile_vec, job_vec)
-        return float(fit * 0.8 + base_score * 0.2)
-    except Exception:
-        return base_score
+import numpy as np
+import sqlite3
+from models.compute_fit_score import cosine_similarity, load_embedding
 
+DB_PATH = Path(__file__).resolve().parents[2] / "data" / "career_agent.db"
+
+def predict_fit_score(job, profile_id):
+    """
+    Berechnet den semantischen Fit zwischen dem aktiven Profil und einem Job.
+    Nutzt die gespeicherten Embeddings aus der Datenbank.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+
+        # Profil-Embedding laden
+        cur.execute("SELECT embedding FROM profiles WHERE id = ?", (profile_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return 0.0
+        profile_vec = load_embedding(row[0])
+
+        # Job-Embedding laden (über refnr oder id)
+        refnr = job.get("refnr")
+        jid = job.get("id")
+        cur.execute("SELECT embedding FROM jobs WHERE refnr = ? OR id = ?", (refnr, jid))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return 0.0
+        job_vec = load_embedding(row[0])
+
+        # Kosinus-Ähnlichkeit berechnen
+        score = float(cosine_similarity(profile_vec, job_vec))
+        print(f"[DEBUG] Profil {profile_id}, Job {jid or refnr}, Score={score:.4f}")
+        return max(0.0, min(score, 1.0))
+
+    except Exception as e:
+        print(f"⚠️ Fehler in predict_fit_score: {e}")
+        return 0.0
+
+    finally:
+        conn.close()
 
 def load_active_user_profile(db_path=None):
     """Lädt aktives Benutzerprofil aus SQLite."""
@@ -172,9 +204,9 @@ def render():
         st.caption(desc)
 
         title_map = {
-            "KI-Enablement Manager": ["Datenanalyst", "Projektleiter KI", "Data Scientist"],
+            "KI-Enablement Manager": ["Datenanalyst", "Projektleiter KI", "Data Scientist", "KI-Manager", "IT-Serice", "Schulungen"],
             "Office & CRM Coordinator": ["Bürokaufmann", "Verwaltung", "Sachbearbeiter"],
-            "Marketing Operations & Content Manager": ["Marketing Manager", "Online-Marketing", "Kommunikation"]
+            "Marketing Operations & Content Manager": ["Marketing Manager", "Online-Marketing", "Kommunikation", "Marketing", "Content"]
         }
         query_list = title_map.get(profile_title, [profile_title])
 
@@ -197,7 +229,11 @@ def render():
             for job in jobs_found:
                 _map_job_fields(job)
                 base_score, why = compute_basescore(job, profile_for_scoring)
-                fit_score = predict_fit_score(job, base_score)
+                fit_score = predict_fit_score(job, selected_profile["id"])
+
+                print(f"[FitScore] {job.get('title')} → {fit_score:.4f}")
+
+                #fit_score = predict_fit_score(job, base_score)
                 job["base_score"] = base_score
                 job["fit_score"] = fit_score
                 job["why_base"] = why

@@ -2,9 +2,10 @@
 import sqlite3
 from pathlib import Path
 from typing import List
-from .base_classes import Job, ApplicantProfile, Feedback
+from .models.base_classes import Job, ApplicantProfile, Feedback
 
-DB_PATH = Path("data/career_agent.db")
+ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = ROOT / "data" / "career_agent.db"
 
 # ------------------------------------------------------------
 # Hilfsfunktion für DB-Verbindung
@@ -76,3 +77,102 @@ def load_feedback(job_id: int = None) -> List[Feedback]:
             """, (job_id, feedback_value, ts, profile_id, match_score, comment))
             conn.commit()
             return cur.lastrowid
+        
+
+    # ------------------------------------------------------------
+    # Writer Agent
+    # ------------------------------------------------------------ 
+
+    import sqlite3
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = BASE_DIR / "data" / "career_agent.db"
+
+
+def get_job(job_id: int) -> dict | None:
+    """
+    Holt einen Job inklusive evtl. verknüpfter profile_id.
+    Erwartet Spalten: id, title, company, url, description, profile_id
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, title, company, url, description, profile_id
+        FROM jobs
+        WHERE id = ?
+        """,
+        (job_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "title": row[1],
+        "company": row[2],
+        "url": row[3],
+        "description": row[4],
+        "profile_id": row[5],
+    }
+
+
+def get_profile(profile_id: int) -> dict | None:
+    """
+    Holt die Basis-Infos zum Profil.
+    Erwartet mindestens: id, name, summary.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, name, summary
+        FROM profiles
+        WHERE id = ?
+        """,
+        (profile_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "name": row[1],
+        "summary": row[2] or "",
+    }
+
+
+def get_resume_text_for_profile(profile_id: int) -> str:
+    """
+    Holt den Lebenslauf-Text zu einem Profil.
+    Variante A: es gibt eine Tabelle resumes mit Spalte text.
+    Passe die Query an deine konkrete DB an.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    # ❗ Falls du andere Spaltennamen hast, hier anpassen
+    try:
+        cur.execute(
+            """
+            SELECT text
+            FROM resumes
+            WHERE profile_id = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (profile_id,),
+        )
+        row = cur.fetchone()
+    except sqlite3.OperationalError:
+        # Fallback: kein resumes-Table → leere Zeichenkette
+        row = None
+
+    conn.close()
+    return row[0] if row and row[0] else ""
